@@ -34,6 +34,7 @@ WAZUH_CONF="$WAZUH_DIR/etc/ossec.conf"
 WAZUH_PYTHON="$WAZUH_DIR/framework/python/bin/python3"
 LOG_FILE="/var/log/qfeeds_wazuh.log"
 CRON_CMD="$WAZUH_PYTHON $UPDATER_DEST"
+API_BASE="https://api.qfeeds.com"
 
 # ================================
 # Functions
@@ -104,6 +105,89 @@ preflight_checks() {
     echo "Pre-flight checks passed."
 }
 
+check_feed_licenses() {
+    echo
+    echo "Verifying API token and checking feed licenses..."
+
+    LICENSE_MALWARE_IP="unknown"
+    LICENSE_MALWARE_DOMAINS="unknown"
+    LICENSE_PHISHING_URLS="unknown"
+    LICENSE_INFO=""
+
+    local response http_status body
+    response=$(curl -s -w "\n%{http_code}" -m 30 -A "Q-Feeds-Wazuh/1.0" \
+        "${API_BASE}/licenses?api_token=${API_TOKEN}")
+
+    http_status=$(echo "$response" | tail -n1)
+    body=$(echo "$response" | sed '$d')
+
+    if [ "$http_status" != "200" ]; then
+        echo "  Warning: License API returned HTTP $http_status."
+        echo "  Feed selection will proceed without license validation."
+        echo
+        return
+    fi
+
+    local license_output
+    license_output=$("$WAZUH_PYTHON" -c '
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+    ci = data.get("company_info", {})
+    ln = ci.get("license_name", "")
+    exp = ci.get("license_expiry_date", "")
+    if exp:
+        exp = exp.split("T")[0]
+    if ln and exp:
+        print("LICENSE_INFO=" + ln + " (expires " + exp + ")")
+    elif ln:
+        print("LICENSE_INFO=" + ln)
+    feeds = {f["feed_type"]: f.get("licensed", False) for f in data.get("feeds", [])}
+    for ft in ["malware_ip", "malware_domains", "phishing_urls"]:
+        val = "yes" if feeds.get(ft, False) else "no"
+        print(ft + "=" + val)
+except Exception:
+    sys.exit(1)
+' <<< "$body" 2>/dev/null)
+
+    if [ $? -ne 0 ]; then
+        echo "  Warning: Could not parse license response."
+        echo "  Feed selection will proceed without license validation."
+        echo
+        return
+    fi
+
+    LICENSE_INFO=$(echo "$license_output" | grep "^LICENSE_INFO=" | cut -d= -f2-)
+
+    echo "$license_output" | grep -q "^malware_ip=yes" && LICENSE_MALWARE_IP="yes"
+    echo "$license_output" | grep -q "^malware_ip=no" && LICENSE_MALWARE_IP="no"
+    echo "$license_output" | grep -q "^malware_domains=yes" && LICENSE_MALWARE_DOMAINS="yes"
+    echo "$license_output" | grep -q "^malware_domains=no" && LICENSE_MALWARE_DOMAINS="no"
+    echo "$license_output" | grep -q "^phishing_urls=yes" && LICENSE_PHISHING_URLS="yes"
+    echo "$license_output" | grep -q "^phishing_urls=no" && LICENSE_PHISHING_URLS="no"
+
+    if [ -n "$LICENSE_INFO" ]; then
+        echo "  License: $LICENSE_INFO"
+    fi
+    echo
+
+    local status
+    for feed_label in "Malware IPs:LICENSE_MALWARE_IP" "Malware Domains:LICENSE_MALWARE_DOMAINS" "Phishing URLs:LICENSE_PHISHING_URLS"; do
+        local label="${feed_label%%:*}"
+        local var="${feed_label##*:}"
+        local val="${!var}"
+        if [ "$val" = "yes" ]; then
+            status="licensed"
+        elif [ "$val" = "no" ]; then
+            status="not licensed"
+        else
+            status="unknown"
+        fi
+        printf "  %-22s %s\n" "$label" "$status"
+    done
+    echo
+}
+
 configure_script() {
     echo
     echo "=== Configuration ==="
@@ -117,21 +201,50 @@ configure_script() {
         exit 1
     fi
 
-    echo
+    check_feed_licenses
+
     echo "--- Feed Selection ---"
-    read -rp "Enable Malware IP feed? [Y/n]: " FEED_IP_CHOICE
-    case "$FEED_IP_CHOICE" in
-        [nN][oO]|[nN]) FEED_MALWARE_IP="no" ;;
-        *) FEED_MALWARE_IP="yes" ;;
-    esac
 
-    read -rp "Enable Malware Domains feed? [Y/n]: " FEED_DOMAINS_CHOICE
-    case "$FEED_DOMAINS_CHOICE" in
-        [nN][oO]|[nN]) FEED_MALWARE_DOMAINS="no" ;;
-        *) FEED_MALWARE_DOMAINS="yes" ;;
-    esac
+    if [ "$LICENSE_MALWARE_IP" = "no" ]; then
+        echo "  Malware IP feed: not licensed — skipping"
+        FEED_MALWARE_IP="no"
+    else
+        read -rp "Enable Malware IP feed? [Y/n]: " FEED_IP_CHOICE
+        case "$FEED_IP_CHOICE" in
+            [nN][oO]|[nN]) FEED_MALWARE_IP="no" ;;
+            *) FEED_MALWARE_IP="yes" ;;
+        esac
+    fi
 
-    if [ "$FEED_MALWARE_IP" = "no" ] && [ "$FEED_MALWARE_DOMAINS" = "no" ]; then
+    if [ "$LICENSE_MALWARE_DOMAINS" = "no" ]; then
+        echo "  Malware Domains feed: not licensed — skipping"
+        FEED_MALWARE_DOMAINS="no"
+    else
+        read -rp "Enable Malware Domains feed? [Y/n]: " FEED_DOMAINS_CHOICE
+        case "$FEED_DOMAINS_CHOICE" in
+            [nN][oO]|[nN]) FEED_MALWARE_DOMAINS="no" ;;
+            *) FEED_MALWARE_DOMAINS="yes" ;;
+        esac
+    fi
+
+    if [ "$LICENSE_PHISHING_URLS" = "no" ]; then
+        echo "  Phishing URLs feed: not licensed — skipping"
+        FEED_PHISHING_URLS="no"
+    elif [ "$LICENSE_PHISHING_URLS" = "yes" ]; then
+        read -rp "Enable Phishing URLs feed? [Y/n]: " FEED_PHISHING_CHOICE
+        case "$FEED_PHISHING_CHOICE" in
+            [nN][oO]|[nN]) FEED_PHISHING_URLS="no" ;;
+            *) FEED_PHISHING_URLS="yes" ;;
+        esac
+    else
+        read -rp "Enable Phishing URLs feed? (license status unknown) [y/N]: " FEED_PHISHING_CHOICE
+        case "$FEED_PHISHING_CHOICE" in
+            [yY][eE][sS]|[yY]) FEED_PHISHING_URLS="yes" ;;
+            *) FEED_PHISHING_URLS="no" ;;
+        esac
+    fi
+
+    if [ "$FEED_MALWARE_IP" = "no" ] && [ "$FEED_MALWARE_DOMAINS" = "no" ] && [ "$FEED_PHISHING_URLS" = "no" ]; then
         echo "Error: At least one feed type must be enabled."
         exit 1
     fi
@@ -188,6 +301,7 @@ API_TOKEN="$API_TOKEN"
 
 FEED_MALWARE_IP="$FEED_MALWARE_IP"
 FEED_MALWARE_DOMAINS="$FEED_MALWARE_DOMAINS"
+FEED_PHISHING_URLS="$FEED_PHISHING_URLS"
 
 IPV6="$IPV6"
 
@@ -343,6 +457,19 @@ IP_RULES
 DOMAIN_RULES
         fi
 
+        if [ "$FEED_PHISHING_URLS" = "yes" ]; then
+            cat <<'PHISHING_RULES'
+
+  <!-- Phishing URL match: web server / proxy logs (uses decoded url field) -->
+  <rule id="100220" level="10">
+    <if_group>web|proxy</if_group>
+    <list field="url" lookup="match_key">etc/lists/qfeeds-phishing-urls</list>
+    <description>Q-Feeds: Phishing URL detected in web/proxy logs</description>
+    <group>threat_intelligence,qfeeds_phishing,</group>
+  </rule>
+PHISHING_RULES
+        fi
+
         echo
         echo '</group>'
     } >> "$WAZUH_RULES_FILE"
@@ -380,6 +507,9 @@ configure_ossec() {
     fi
     if [ "$FEED_MALWARE_DOMAINS" = "yes" ]; then
         list_block="$list_block\n    <list>etc/lists/qfeeds-malware-domains</list>"
+    fi
+    if [ "$FEED_PHISHING_URLS" = "yes" ]; then
+        list_block="$list_block\n    <list>etc/lists/qfeeds-phishing-urls</list>"
     fi
     list_block="$list_block\n    <!-- Q-FEEDS-LISTS-END -->"
 

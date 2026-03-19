@@ -2,7 +2,7 @@
 
 # 🛡️ Q-Feeds Wazuh Integration
 
-**Threat intelligence for Wazuh SIEM — detect malicious IPs and domains in your logs**
+**Threat intelligence for Wazuh SIEM — detect malicious IPs, domains, and phishing URLs in your logs**
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Wazuh](https://img.shields.io/badge/Wazuh-4.x+-orange)](https://wazuh.com/)
@@ -35,7 +35,7 @@ Obtain your API key at [tip.qfeeds.com](https://tip.qfeeds.com/).
 ### Step 2: Download the scripts
 
 ```bash
-git clone <repository-url> /tmp/qfeeds-wazuh
+git clone https://github.com/Q-Feeds/Q-Feeds-Wazuh-Integration.git /tmp/qfeeds-wazuh
 cd /tmp/qfeeds-wazuh
 ```
 
@@ -62,6 +62,7 @@ Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](ht
 
 - ✅ **Malware IP detection** — alerts when a source or destination IP matches the Q-Feeds malware IP blacklist
 - ✅ **Malware domain detection** — alerts when a domain in DNS, web, or proxy logs matches the Q-Feeds malware domain blacklist
+- ✅ **Phishing URL detection** — alerts when a full URL in proxy or web logs matches the Q-Feeds phishing URL feed (requires license)
 - ✅ **Active Response** (optional) — automatically blocks matched IPs using the local firewall via Wazuh's `firewall-drop` command
 - ✅ **IPv4 and IPv6 support** for IP feeds
 - ✅ **Custom decoders** — includes Unbound DNS decoder for OPNsense and other Unbound-based resolvers
@@ -104,8 +105,12 @@ Wazuh CDB lists use a `key:value` format. This integration stores indicators as 
 | Malware IPs | `192.168.1.1:` | `address_match_key` on srcip/dstip |
 | Malware IPs (CIDR /24) | `192.168.1.:` | Matches entire /24 subnet |
 | Malware Domains | `evil-domain.com:` | `match_key` on url field |
+| Phishing URLs | `https://evil.com/login:` | `match_key` on url field |
+| Phishing URLs (no scheme) | `evil.com/login:` | `match_key` on url field |
 
 IPv4 CIDRs are converted to Wazuh's dot-notation. Only /8, /16, /24, and /32 masks are supported by Wazuh — other CIDR sizes are skipped.
+
+Phishing URLs are stored in two variants per entry: with the original protocol prefix (e.g. `https://`) and without it. This maximizes matching across different log sources — proxy logs typically include the scheme, while other sources may not.
 
 ### Wazuh Rules
 
@@ -119,6 +124,7 @@ The integration installs these custom rules:
 | 100211 | 10 | DNS query to malware domain (Sysmon) | `win.eventdata.queryName` in Sysmon Event ID 22 |
 | 100212 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC5424) |
 | 100213 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC3164) |
+| 100220 | 10 | Phishing URL detected in web/proxy logs | `url` in web server or proxy logs (requires license) |
 
 ### Custom Decoders
 
@@ -142,6 +148,16 @@ The integration includes a custom decoder (`/var/ossec/etc/decoders/qfeeds_decod
 | Web server access logs | Any | 100210 | Apache, Nginx, etc. |
 | Web proxy logs | Any | 100210 | Squid, etc. |
 | Unbound DNS resolver | OPNsense, Linux, FreeBSD | 100212/100213 | Requires "Log Queries" enabled in Unbound (see below) |
+
+**Phishing URL rule** (100220) fires when a decoded `url` field matches a full phishing URL. This works best with log sources that capture the complete URL including the path:
+
+| Source | Platform | Rule | Notes |
+|---|---|---|---|
+| Web proxy logs | Any | 100220 | Squid, Zscaler, etc. — logs the full URL for HTTP traffic |
+| Web server access logs | Any | 100220 | If the request URI matches a known phishing path |
+| Reverse proxy / WAF | Any | 100220 | Logs upstream requests with full URLs |
+
+> **Note:** HTTPS traffic through a proxy is typically logged as a `CONNECT` to the domain only (the path is encrypted). Full URL matching for HTTPS phishing URLs requires SSL inspection / TLS interception on the proxy.
 
 ---
 
@@ -213,7 +229,7 @@ sudo bash install.sh
 The installer will prompt for:
 
 1. **API Token** — your Q-Feeds API token
-2. **Feed types** — enable/disable Malware IPs and Malware Domains
+2. **Feed types** — enable/disable Malware IPs, Malware Domains, and Phishing URLs
 3. **IPv6** — include IPv6 addresses in the IP feed
 4. **Active Response** — auto-block matched IPs with a configurable timeout
 5. **IP Whitelist** — IPs that should never trigger alerts
@@ -229,6 +245,7 @@ The installer will prompt for:
 | Wazuh rules | `/var/ossec/etc/rules/qfeeds_rules.xml` |
 | CDB list (IPs) | `/var/ossec/etc/lists/qfeeds-malware-ip` |
 | CDB list (domains) | `/var/ossec/etc/lists/qfeeds-malware-domains` |
+| CDB list (phishing URLs) | `/var/ossec/etc/lists/qfeeds-phishing-urls` |
 | Log file | `/var/log/qfeeds_wazuh.log` |
 | Cron job | User crontab for root |
 
@@ -247,6 +264,7 @@ API_TOKEN="your-api-token-here"
 
 FEED_MALWARE_IP="yes"
 FEED_MALWARE_DOMAINS="yes"
+FEED_PHISHING_URLS="no"
 
 IPV6="yes"
 
@@ -266,6 +284,7 @@ LOG_FILE="/var/log/qfeeds_wazuh.log"
 | `API_TOKEN` | Q-Feeds API token (required) | — |
 | `FEED_MALWARE_IP` | Enable malware IP feed | `yes` |
 | `FEED_MALWARE_DOMAINS` | Enable malware domains feed | `yes` |
+| `FEED_PHISHING_URLS` | Enable phishing URLs feed (requires license) | `no` |
 | `IPV6` | Include IPv6 in IP feed | `yes` |
 | `ACTIVE_RESPONSE` | Enable Active Response (set during install) | `no` |
 | `ACTIVE_RESPONSE_TIMEOUT` | Block duration in seconds | `60` |
@@ -317,6 +336,10 @@ head -20 /var/ossec/etc/lists/qfeeds-malware-ip
 # Check the domains list
 wc -l /var/ossec/etc/lists/qfeeds-malware-domains
 head -20 /var/ossec/etc/lists/qfeeds-malware-domains
+
+# Check the phishing URLs list (if enabled)
+wc -l /var/ossec/etc/lists/qfeeds-phishing-urls
+head -20 /var/ossec/etc/lists/qfeeds-phishing-urls
 ```
 
 ### Verify Rules Are Loaded
@@ -341,6 +364,7 @@ Navigate to **Threat Hunting** and filter by:
 - `rule.id: 100210` (domain match — web/proxy)
 - `rule.id: 100211` (domain match — Sysmon DNS)
 - `rule.id: 100212` or `rule.id: 100213` (domain match — Unbound DNS)
+- `rule.id: 100220` (phishing URL match)
 - `rule.groups: qfeeds` (all Q-Feeds alerts)
 
 ---
@@ -437,7 +461,7 @@ sudo bash uninstall.sh
 
 This removes all Q-Feeds components:
 - Cron job
-- CDB lists and compiled `.cdb` files
+- CDB lists and compiled `.cdb` files (IPs, domains, and phishing URLs)
 - Wazuh decoders file
 - Wazuh rules file
 - ossec.conf modifications (CDB list references and Active Response)

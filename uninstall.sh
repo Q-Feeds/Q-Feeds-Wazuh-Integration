@@ -111,7 +111,8 @@ fi
 echo "Removing CDB lists..."
 REMOVED_LISTS=0
 for f in "$WAZUH_LISTS_DIR"/qfeeds-malware-ip "$WAZUH_LISTS_DIR"/qfeeds-malware-ip.cdb \
-         "$WAZUH_LISTS_DIR"/qfeeds-malware-domains "$WAZUH_LISTS_DIR"/qfeeds-malware-domains.cdb; do
+         "$WAZUH_LISTS_DIR"/qfeeds-malware-domains "$WAZUH_LISTS_DIR"/qfeeds-malware-domains.cdb \
+         "$WAZUH_LISTS_DIR"/qfeeds-phishing-urls "$WAZUH_LISTS_DIR"/qfeeds-phishing-urls.cdb; do
     if [ -f "$f" ]; then
         rm -f "$f"
         echo "  Removed $(basename "$f")"

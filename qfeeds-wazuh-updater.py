@@ -34,9 +34,11 @@ API_BASE = "https://api.qfeeds.com"
 
 FEED_TYPE_IP = "malware_ip"
 FEED_TYPE_DOMAINS = "malware_domains"
+FEED_TYPE_PHISHING_URLS = "phishing_urls"
 
 CDB_FILE_IP = os.path.join(WAZUH_LISTS_DIR, "qfeeds-malware-ip")
 CDB_FILE_DOMAINS = os.path.join(WAZUH_LISTS_DIR, "qfeeds-malware-domains")
+CDB_FILE_PHISHING_URLS = os.path.join(WAZUH_LISTS_DIR, "qfeeds-phishing-urls")
 
 # Supported CIDR masks for Wazuh CDB address_match_key (IPv4 only)
 SUPPORTED_MASKS = {32, 24, 16, 8}
@@ -136,49 +138,73 @@ def curl_get(url, timeout=120):
 # ================================
 # License Check
 # ================================
-def check_license_schedule(api_token, feed_type):
+def fetch_license_data(api_token):
     """
-    Query the licenses API and return whether an update is due for the given
-    feed_type. Returns True if we should update, False if we should skip.
+    Fetch license data from the API once and return a dict keyed by feed_type.
+    Each value is a dict with 'licensed' (bool) and 'next_update' (str or None).
+    Returns None if the API call fails (caller should treat all feeds as due).
     """
     url = f"{API_BASE}/licenses?api_token={api_token}"
     status, body = curl_get(url, timeout=60)
 
     if status is None:
-        log(f"Warning: License check failed for {feed_type}: {body}. Proceeding with update.")
-        return True
+        log(f"Warning: License check failed: {body}. Proceeding with all updates.")
+        return None
 
     if status != 200:
-        log(f"Warning: License API returned HTTP {status} for {feed_type}. Proceeding with update.")
-        return True
+        log(f"Warning: License API returned HTTP {status}. Proceeding with all updates.")
+        return None
 
     try:
         data = json.loads(body)
     except json.JSONDecodeError as e:
-        log(f"Warning: Could not parse license response for {feed_type}: {e}. Proceeding with update.")
+        log(f"Warning: Could not parse license response: {e}. Proceeding with all updates.")
+        return None
+
+    result = {}
+    for feed in data.get("feeds", []):
+        ft = feed.get("feed_type")
+        if ft:
+            result[ft] = {
+                "licensed": feed.get("licensed", False),
+                "next_update": feed.get("next_update"),
+            }
+
+    return result
+
+
+def should_update_feed(license_data, feed_type):
+    """
+    Check whether a feed should be updated based on cached license data.
+    Returns True if the feed should be downloaded, False if it should be skipped.
+    """
+    if license_data is None:
         return True
 
-    feeds = data.get("feeds", [])
-    for feed in feeds:
-        if feed.get("feed_type") == feed_type and feed.get("licensed") is True:
-            next_update = feed.get("next_update")
-            if not next_update:
-                return True
+    feed_info = license_data.get(feed_type)
+    if not feed_info:
+        log(f"Warning: Feed '{feed_type}' not found in license data. Skipping.")
+        return False
 
-            try:
-                next_dt = datetime.fromisoformat(next_update.replace("Z", "+00:00"))
-                now_dt = datetime.now(timezone.utc)
-                if now_dt < next_dt:
-                    log(f"Skipping {feed_type}: next update at {next_update} UTC.")
-                    return False
-            except (ValueError, TypeError):
-                log(f"Warning: Could not parse next_update '{next_update}' for {feed_type}.")
-                return True
+    if not feed_info["licensed"]:
+        log(f"Warning: Feed '{feed_type}' is not licensed. Skipping.")
+        return False
 
-            return True
+    next_update = feed_info.get("next_update")
+    if not next_update:
+        return True
 
-    log(f"Warning: Feed '{feed_type}' not found or not licensed. Skipping.")
-    return False
+    try:
+        next_dt = datetime.fromisoformat(next_update.replace("Z", "+00:00"))
+        now_dt = datetime.now(timezone.utc)
+        if now_dt < next_dt:
+            log(f"Skipping {feed_type}: next update at {next_update}.")
+            return False
+    except (ValueError, TypeError):
+        log(f"Warning: Could not parse next_update '{next_update}' for {feed_type}.")
+        return True
+
+    return True
 
 
 # ================================
@@ -321,6 +347,50 @@ def convert_domain_feed_to_cdb(feed_text):
             entries.add(key)
 
     log(f"Domain feed: {len(entries)} CDB entries generated.")
+    return "\n".join(sorted(entries))
+
+
+def url_to_cdb_keys(line):
+    """
+    Convert a phishing URL line to one or more Wazuh CDB keys.
+
+    Stores two variants for maximum matching coverage:
+      1. The URL as-is (with protocol) — matches proxy logs that log full URLs
+      2. Without protocol prefix    — matches decoders that strip the scheme
+
+    Trailing slashes are normalized (removed).
+    Returns a list of CDB key strings, or an empty list if the line is invalid.
+    """
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return []
+
+    url = line.rstrip("/")
+    keys = [url + ":"]
+
+    for prefix in ("https://", "http://"):
+        if url.lower().startswith(prefix):
+            stripped = url[len(prefix):]
+            if stripped:
+                keys.append(stripped + ":")
+            break
+
+    return keys
+
+
+def convert_url_feed_to_cdb(feed_text):
+    """
+    Convert plain-text phishing URL feed to CDB list content.
+    Returns a sorted, deduplicated string of CDB entries.
+    """
+    entries = set()
+
+    for line in feed_text.splitlines():
+        for key in url_to_cdb_keys(line):
+            entries.add(key)
+
+    unique_urls = sum(1 for line in feed_text.splitlines() if line.strip() and not line.strip().startswith("#"))
+    log(f"Phishing URL feed: {unique_urls} URLs -> {len(entries)} CDB entries generated.")
     return "\n".join(sorted(entries))
 
 
@@ -503,6 +573,7 @@ def main():
     api_token = config["API_TOKEN"]
     feed_ip_enabled = config.get("FEED_MALWARE_IP", "yes").lower() == "yes"
     feed_domains_enabled = config.get("FEED_MALWARE_DOMAINS", "yes").lower() == "yes"
+    feed_phishing_urls_enabled = config.get("FEED_PHISHING_URLS", "no").lower() == "yes"
     ipv6_enabled = config.get("IPV6", "yes").lower() == "yes"
 
     whitelist_v4 = parse_whitelist(config.get("WHITELIST_V4", ""))
@@ -513,18 +584,19 @@ def main():
     log("=" * 60)
     log("Q-Feeds Wazuh updater starting.")
 
-    if not feed_ip_enabled and not feed_domains_enabled:
+    if not feed_ip_enabled and not feed_domains_enabled and not feed_phishing_urls_enabled:
         log("No feeds enabled. Nothing to do.")
         return
 
     os.makedirs(WAZUH_LISTS_DIR, exist_ok=True)
 
+    license_data = None if force_update else fetch_license_data(api_token)
+
     any_changed = False
 
     # --- Malware IP Feed ---
     if feed_ip_enabled:
-        should_update = force_update or check_license_schedule(api_token, FEED_TYPE_IP)
-        if should_update:
+        if force_update or should_update_feed(license_data, FEED_TYPE_IP):
             combined_text = ""
 
             # Fetch IPv4
@@ -549,8 +621,7 @@ def main():
 
     # --- Malware Domains Feed ---
     if feed_domains_enabled:
-        should_update = force_update or check_license_schedule(api_token, FEED_TYPE_DOMAINS)
-        if should_update:
+        if force_update or should_update_feed(license_data, FEED_TYPE_DOMAINS):
             domain_text = download_feed(api_token, FEED_TYPE_DOMAINS)
             if domain_text:
                 cdb_content = convert_domain_feed_to_cdb(domain_text)
@@ -558,6 +629,17 @@ def main():
                     any_changed = True
             else:
                 log("Warning: No domain feed data received. Keeping existing CDB list.")
+
+    # --- Phishing URLs Feed ---
+    if feed_phishing_urls_enabled:
+        if force_update or should_update_feed(license_data, FEED_TYPE_PHISHING_URLS):
+            url_text = download_feed(api_token, FEED_TYPE_PHISHING_URLS)
+            if url_text:
+                cdb_content = convert_url_feed_to_cdb(url_text)
+                if write_cdb_list(CDB_FILE_PHISHING_URLS, cdb_content):
+                    any_changed = True
+            else:
+                log("Warning: No phishing URL feed data received. Keeping existing CDB list.")
 
     # --- Compile and Restart ---
     if any_changed:
