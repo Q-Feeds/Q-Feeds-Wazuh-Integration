@@ -1,45 +1,78 @@
-# Q-Feeds Wazuh Integration
+<div align="center">
+
+# 🛡️ Q-Feeds Wazuh Integration
+
+**Threat intelligence for Wazuh SIEM — detect malicious IPs and domains in your logs**
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Wazuh](https://img.shields.io/badge/Wazuh-4.x+-orange)](https://wazuh.com/)
+
+</div>
+
+---
+
+## 📋 Table of Contents
+
+- [Quick Start](#-quick-start)
+- [Overview](#-overview)
+- [How It Works](#-how-it-works)
+- [Configuring Domain Detection on OPNsense](#-configuring-domain-detection-on-opnsense-unbound)
+- [Installation](#-detailed-installation)
+- [Configuration](#-configuration)
+- [Usage and Verification](#-usage-and-verification)
+- [Troubleshooting](#-troubleshooting)
+- [Uninstalling](#-uninstalling)
+- [License](#-license)
+
+---
+
+## 🚀 Quick Start
+
+### Step 1: Get your API token
+
+Obtain your API key at [tip.qfeeds.com](https://tip.qfeeds.com/).
+
+### Step 2: Download the scripts
+
+```bash
+git clone <repository-url> /tmp/qfeeds-wazuh
+cd /tmp/qfeeds-wazuh
+```
+
+### Step 3: Run the installer as root
+
+```bash
+sudo bash install.sh
+```
+
+The installer will:
+1. Prompt for your API token, feed selection, and optional settings
+2. Install the updater script, decoders, rules, and cron job
+3. Perform the first full feed download immediately
+
+### Step 4: Done
+
+Your Wazuh manager is now monitoring for malicious IPs and domains. The cron job checks for updates every 20 minutes (configurable), and actual API calls only happen when your license allows.
+
+---
+
+## 📖 Overview
 
 Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](https://wazuh.com) to detect and optionally block connections to known malicious IP addresses and domains.
 
-The integration downloads threat intelligence feeds from the Q-Feeds API, converts them into Wazuh CDB (Constant Database) lists, and installs custom rules that generate alerts whenever a match is found in your logs.
+- ✅ **Malware IP detection** — alerts when a source or destination IP matches the Q-Feeds malware IP blacklist
+- ✅ **Malware domain detection** — alerts when a domain in DNS, web, or proxy logs matches the Q-Feeds malware domain blacklist
+- ✅ **Active Response** (optional) — automatically blocks matched IPs using the local firewall via Wazuh's `firewall-drop` command
+- ✅ **IPv4 and IPv6 support** for IP feeds
+- ✅ **Custom decoders** — includes Unbound DNS decoder for OPNsense and other Unbound-based resolvers
+- ✅ **Multi-platform domain detection** — dedicated rules for Sysmon (Windows), web/proxy servers, and Unbound DNS
+- ✅ **License-aware scheduling** — only fetches new data when the Q-Feeds API indicates updates are available
+- ✅ **Automatic CDB compilation** — restarts Wazuh only when changes are detected (4.x+ compiles automatically)
+- ✅ **Easy install/uninstall** — interactive installer and clean uninstaller
 
-## Features
+---
 
-- **Malware IP detection** -- alerts when a source or destination IP in your logs matches the Q-Feeds malware IP blacklist
-- **Malware domain detection** -- alerts when a domain in DNS or web logs matches the Q-Feeds malware domain blacklist
-- **Active Response** (optional) -- automatically blocks matched IPs using the local firewall via Wazuh's `firewall-drop` command
-- **IPv4 and IPv6 support** for IP feeds
-- **License-aware scheduling** -- only fetches new data when the Q-Feeds API indicates updates are available
-- **Automatic CDB compilation** -- recompiles CDB lists and restarts Wazuh only when changes are detected
-- **Easy install/uninstall** -- interactive installer and clean uninstaller
-
-## Quick Start
-
-```bash
-# 1. Clone or download this repository on the Wazuh manager
-git clone <repository-url> /tmp/qfeeds-wazuh
-cd /tmp/qfeeds-wazuh
-
-# 2. Run the installer as root
-sudo bash install.sh
-
-# 3. Follow the interactive prompts (API token, feed selection, etc.)
-```
-
-You will need your Q-Feeds API token, available at [tip.qfeeds.com](https://tip.qfeeds.com).
-
-## Requirements
-
-- **Wazuh manager** 4.x or later (installed at `/var/ossec`)
-- **Root access** on the Wazuh manager server
-- **curl** installed on the system
-- **Q-Feeds API token** with an active license
-- Internet access to `api.qfeeds.com`
-
-No additional Python installation is needed -- the integration uses the Python bundled with Wazuh (`/var/ossec/framework/python/bin/python3`).
-
-## How It Works
+## 🔧 How It Works
 
 ### Architecture
 
@@ -51,8 +84,7 @@ Q-Feeds API           Wazuh Manager
   /api       <------  2. Download feeds (plain text)
                       3. Convert to CDB format
                       4. Write to /var/ossec/etc/lists/
-                      5. Compile CDB lists (ossec-makelists)
-                      6. Restart Wazuh manager
+                      5. Restart Wazuh manager (compiles CDB lists automatically on 4.x+)
                       
                       Wazuh Rules Engine
                       ------------------
@@ -73,19 +105,24 @@ Wazuh CDB lists use a `key:value` format. This integration stores indicators as 
 | Malware IPs (CIDR /24) | `192.168.1.:` | Matches entire /24 subnet |
 | Malware Domains | `evil-domain.com:` | `match_key` on url field |
 
-IPv4 CIDRs are converted to Wazuh's dot-notation. Only /8, /16, /24, and /32 masks are supported by Wazuh -- other CIDR sizes are skipped.
+IPv4 CIDRs are converted to Wazuh's dot-notation. Only /8, /16, /24, and /32 masks are supported by Wazuh — other CIDR sizes are skipped.
 
 ### Wazuh Rules
 
 The integration installs these custom rules:
 
-| Rule ID | Level | Description |
-|---|---|---|
-| 100200 | 10 | Source IP found in malware IP blacklist |
-| 100201 | 10 | Destination IP found in malware IP blacklist |
-| 100210 | 10 | Domain found in malware domain blacklist |
+| Rule ID | Level | Description | Trigger |
+|---|---|---|---|
+| 100200 | 10 | Source IP found in malware IP blacklist | `srcip` in firewall, web, syslog, sysmon, IDS logs |
+| 100201 | 10 | Destination IP found in malware IP blacklist | `dstip` in firewall, web, syslog, sysmon, IDS logs |
+| 100210 | 10 | Domain found in malware domain blacklist | `url` in web server or proxy logs |
+| 100211 | 10 | DNS query to malware domain (Sysmon) | `win.eventdata.queryName` in Sysmon Event ID 22 |
+| 100212 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC5424) |
+| 100213 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC3164) |
 
-Rules trigger on events in these groups: `web`, `attack`, `attacks`, `syslog`, `firewall`, `ids`, `sysmon`, `dns`, `proxy`.
+### Custom Decoders
+
+The integration includes a custom decoder (`/var/ossec/etc/decoders/qfeeds_decoders.xml`) for **Unbound DNS resolver** logs. It extracts the client IP, queried domain, query type, and response code from Unbound query lines. This decoder supports both RFC5424 (raw OPNsense logs) and RFC3164 (syslog-forwarded) formats.
 
 ### Log Sources That Trigger Detection
 
@@ -97,13 +134,75 @@ Rules trigger on events in these groups: `web`, `attack`, `attacks`, `syslog`, `
 - Sysmon network connection events
 - SSH, FTP, and other service logs
 
-**Domain rules** (100210) fire when a decoder extracts a `url` field. Common sources:
+**Domain rules** (100210–100213) fire when a decoder extracts a domain from logs. Sources per rule:
 
-- Sysmon Event 22 (DNS query)
-- Web proxy logs (Squid, etc.)
-- Web server access logs
+| Source | Platform | Rule | Notes |
+|---|---|---|---|
+| Sysmon Event ID 22 (DNS Query) | Windows | 100211 | Best option — logs queries client-side before any DNS server blocks them |
+| Web server access logs | Any | 100210 | Apache, Nginx, etc. |
+| Web proxy logs | Any | 100210 | Squid, etc. |
+| Unbound DNS resolver | OPNsense, Linux, FreeBSD | 100212/100213 | Requires "Log Queries" enabled in Unbound (see below) |
 
-## Installation
+---
+
+## 🌐 Configuring Domain Detection on OPNsense (Unbound)
+
+If you run OPNsense with the Wazuh agent plugin and want domain detection via Unbound DNS logs (rules 100212/100213), follow these steps.
+
+> **Note:** If OPNsense's built-in DNSBL (Unbound blocklist) is active with the Q-Feeds domain feed, blocked domains are intercepted before they reach Unbound's log and will not trigger these rules. In that case, domain detection in Wazuh is redundant since OPNsense already blocks them. These rules are most useful when Unbound runs as a plain resolver **without** DNSBL, or when you want to detect queries to malicious domains that are not (yet) in the local blocklist.
+
+### 1. Enable Unbound query logging
+
+In OPNsense, go to **Services > Unbound DNS > Advanced** and enable **Log Queries**. This logs one line per DNS query with the client IP, domain name, and query type.
+
+Optionally enable **Log Replies** to also log response codes and timing information.
+
+Leave **Log Level Verbosity** at the default (level 1). Do **not** use level 3 for this purpose — it produces excessive internal logging (iterator, validator, etc.) alongside query lines.
+
+> **Note:** Query logging has a performance impact on the DNS resolver. Monitor CPU usage and response times after enabling.
+
+### 2. Configure the Wazuh agent to read Unbound logs
+
+The Unbound resolver log at `/var/log/resolver/latest.log` is in RFC5424 format and is not collected by the Wazuh agent by default. Add it to the agent configuration on OPNsense.
+
+Edit `/var/ossec/etc/ossec.conf` on OPNsense (via SSH) and add the following block **inside** the `<ossec_config>` tags:
+
+```xml
+<localfile>
+  <log_format>syslog</log_format>
+  <location>/var/log/resolver/latest.log</location>
+</localfile>
+```
+
+Then restart the agent:
+
+```bash
+service wazuh-agent restart
+```
+
+Verify the agent is reading the file:
+
+```bash
+tail -20 /var/ossec/logs/ossec.log | grep resolver
+```
+
+You should see: `Analyzing file: '/var/log/resolver/latest.log'`.
+
+> **Note:** This manual edit to `ossec.conf` may be overwritten by OPNsense Wazuh agent plugin updates. After a plugin update, verify the `<localfile>` entry is still present.
+
+### 3. Verify on the Wazuh manager
+
+Use `wazuh-logtest` on the Wazuh manager to confirm the decoder and rules work:
+
+```bash
+/var/ossec/bin/wazuh-logtest
+```
+
+Paste a sample Unbound query line (copy from `/var/log/resolver/latest.log` on OPNsense — look for lines containing `info:` followed by an IP address and domain). The output should show decoder `qfeeds-unbound` extracting `srcip`, `url`, `extra_data`, and `status` fields.
+
+---
+
+## 📝 Detailed Installation
 
 ### Interactive Install
 
@@ -113,12 +212,12 @@ sudo bash install.sh
 
 The installer will prompt for:
 
-1. **API Token** -- your Q-Feeds API token
-2. **Feed types** -- enable/disable Malware IPs and Malware Domains
-3. **IPv6** -- include IPv6 addresses in the IP feed
-4. **Active Response** -- auto-block matched IPs with a configurable timeout
-5. **IP Whitelist** -- IPs that should never trigger alerts
-6. **Cron schedule** -- how often to check for updates (default: every 20 minutes)
+1. **API Token** — your Q-Feeds API token
+2. **Feed types** — enable/disable Malware IPs and Malware Domains
+3. **IPv6** — include IPv6 addresses in the IP feed
+4. **Active Response** — auto-block matched IPs with a configurable timeout
+5. **IP Whitelist** — IPs that should never trigger alerts
+6. **Cron schedule** — how often to check for updates (default: every 20 minutes)
 
 ### What Gets Installed
 
@@ -126,6 +225,7 @@ The installer will prompt for:
 |---|---|
 | Config file | `/etc/qfeeds/qfeeds_wazuh.conf` |
 | Updater script | `/usr/local/bin/qfeeds-wazuh-updater.py` |
+| Wazuh decoders | `/var/ossec/etc/decoders/qfeeds_decoders.xml` |
 | Wazuh rules | `/var/ossec/etc/rules/qfeeds_rules.xml` |
 | CDB list (IPs) | `/var/ossec/etc/lists/qfeeds-malware-ip` |
 | CDB list (domains) | `/var/ossec/etc/lists/qfeeds-malware-domains` |
@@ -134,9 +234,11 @@ The installer will prompt for:
 
 The installer also modifies `/var/ossec/etc/ossec.conf` to add CDB list references and (optionally) Active Response configuration. All modifications are wrapped in marker comments for clean removal.
 
-## Configuration
+---
 
-### Config File
+## ⚙️ Configuration
+
+### Configuration File
 
 Located at `/etc/qfeeds/qfeeds_wazuh.conf`:
 
@@ -157,16 +259,18 @@ WHITELIST_V6=""
 LOG_FILE="/var/log/qfeeds_wazuh.log"
 ```
 
+### Configuration Reference
+
 | Variable | Description | Default |
 |---|---|---|
-| `API_TOKEN` | Q-Feeds API token (required) | -- |
+| `API_TOKEN` | Q-Feeds API token (required) | — |
 | `FEED_MALWARE_IP` | Enable malware IP feed | `yes` |
 | `FEED_MALWARE_DOMAINS` | Enable malware domains feed | `yes` |
 | `IPV6` | Include IPv6 in IP feed | `yes` |
 | `ACTIVE_RESPONSE` | Enable Active Response (set during install) | `no` |
 | `ACTIVE_RESPONSE_TIMEOUT` | Block duration in seconds | `60` |
-| `WHITELIST_V4` | Comma-separated IPv4 addresses to never alert on | empty |
-| `WHITELIST_V6` | Comma-separated IPv6 addresses to never alert on | empty |
+| `WHITELIST_V4` | Comma-separated IPv4 addresses to never alert on | *(empty)* |
+| `WHITELIST_V6` | Comma-separated IPv6 addresses to never alert on | *(empty)* |
 | `LOG_FILE` | Path to the updater log file | `/var/log/qfeeds_wazuh.log` |
 
 ### Changing Configuration After Install
@@ -175,7 +279,21 @@ You can edit `/etc/qfeeds/qfeeds_wazuh.conf` directly for options like API token
 
 To enable/disable feeds or Active Response after installation, you will also need to update the Wazuh rules file and ossec.conf. It is easier to re-run the installer.
 
-## Usage
+---
+
+## ✅ Prerequisites
+
+- [x] **Wazuh manager** 4.x or later (installed at `/var/ossec`)
+- [x] **Root access** on the Wazuh manager server
+- [x] **curl** installed on the system
+- [x] **Q-Feeds API token** with an active license
+- [x] Internet access to `api.qfeeds.com`
+
+No additional Python installation is needed — the integration uses the Python bundled with Wazuh (`/var/ossec/framework/python/bin/python3`).
+
+---
+
+## 🎯 Usage and Verification
 
 ### Force an Immediate Update
 
@@ -204,45 +322,30 @@ head -20 /var/ossec/etc/lists/qfeeds-malware-domains
 ### Verify Rules Are Loaded
 
 ```bash
-# Check Wazuh logs for rule loading
 grep -i "qfeeds" /var/ossec/logs/ossec.log
 ```
 
-### Test a Rule (Using ossec-logtest)
+### Test a Rule
 
 ```bash
-# Test an IP match against the IP blacklist
 /var/ossec/bin/wazuh-logtest
 ```
 
-Then paste a sample log line containing a known blacklisted IP.
+Then paste a sample log line containing a known blacklisted IP or domain.
 
 ### View Alerts in Wazuh Dashboard
 
 Navigate to **Threat Hunting** and filter by:
 - `rule.id: 100200` (source IP match)
 - `rule.id: 100201` (destination IP match)
-- `rule.id: 100210` (domain match)
+- `rule.id: 100210` (domain match — web/proxy)
+- `rule.id: 100211` (domain match — Sysmon DNS)
+- `rule.id: 100212` or `rule.id: 100213` (domain match — Unbound DNS)
 - `rule.groups: qfeeds` (all Q-Feeds alerts)
 
-## Uninstalling
+---
 
-```bash
-sudo bash uninstall.sh
-```
-
-This removes all Q-Feeds components:
-- Cron job
-- CDB lists and compiled `.cdb` files
-- Wazuh rules file
-- ossec.conf modifications (CDB list references and Active Response)
-- Configuration file
-- Updater script
-- Log and lock files
-
-Backup copies of `ossec.conf` are preserved.
-
-## Troubleshooting
+## 🔍 Troubleshooting
 
 ### No alerts generated
 
@@ -287,7 +390,8 @@ Backup copies of `ossec.conf` are preserved.
 
 ### CDB list not compiling
 
-Run the compiler manually and check for errors:
+On Wazuh 4.x+, CDB lists are compiled automatically when the manager restarts. On older versions, run the compiler manually:
+
 ```bash
 sudo /var/ossec/bin/ossec-makelists
 ```
@@ -309,10 +413,60 @@ sudo /var/ossec/bin/ossec-makelists
    ls /var/ossec/active-response/bin/firewall-drop
    ```
 
-## License
+### Unbound domain detection not working
 
-Apache License 2.0 -- see [LICENSE](LICENSE) for details.
+1. Verify "Log Queries" is enabled in OPNsense Unbound settings
+2. Verify the Wazuh agent is reading the resolver log:
+   ```bash
+   grep resolver /var/ossec/logs/ossec.log
+   ```
+3. Test the decoder on the Wazuh manager:
+   ```bash
+   /var/ossec/bin/wazuh-logtest
+   ```
+   Paste a sample Unbound query line — the decoder should extract `srcip`, `url`, `extra_data`, and `status`.
+4. If OPNsense DNSBL is active, blocked domains will not appear in the resolver log (see [OPNsense section](#-configuring-domain-detection-on-opnsense-unbound))
 
-## Disclaimer
+---
 
-Use at your own risk. Q-Feeds is not responsible for any damage caused by this integration. Always test in a non-production environment first.
+## 🗑️ Uninstalling
+
+```bash
+sudo bash uninstall.sh
+```
+
+This removes all Q-Feeds components:
+- Cron job
+- CDB lists and compiled `.cdb` files
+- Wazuh decoders file
+- Wazuh rules file
+- ossec.conf modifications (CDB list references and Active Response)
+- Configuration file
+- Updater script
+- Log and lock files
+
+Backup copies of `ossec.conf` are preserved.
+
+> **Note:** The uninstaller does **not** remove the `<localfile>` entry for Unbound logs on OPNsense agents. Remove it manually if no longer needed.
+
+---
+
+## 📄 License
+
+This project is licensed under the **Apache License 2.0** — see the [LICENSE](LICENSE) file for details.
+
+---
+
+## ⚠️ Disclaimer
+
+**Use at your own risk.**
+
+Q-Feeds is not responsible for any damage caused by this integration. Always test in a non-production environment first.
+
+---
+
+<div align="center">
+
+[Report Bug](https://github.com/Q-Feeds/Q-Feeds-Wazuh-Integration/issues) · [Request Feature](https://github.com/Q-Feeds/Q-Feeds-Wazuh-Integration/issues)
+
+</div>

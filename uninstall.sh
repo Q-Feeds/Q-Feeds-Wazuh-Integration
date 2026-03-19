@@ -38,6 +38,7 @@ CONFIG_FILE="/etc/qfeeds/qfeeds_wazuh.conf"
 UPDATER_DEST="/usr/local/bin/qfeeds-wazuh-updater.py"
 WAZUH_DIR="/var/ossec"
 WAZUH_RULES_FILE="$WAZUH_DIR/etc/rules/qfeeds_rules.xml"
+WAZUH_DECODERS_FILE="$WAZUH_DIR/etc/decoders/qfeeds_decoders.xml"
 WAZUH_LISTS_DIR="$WAZUH_DIR/etc/lists"
 WAZUH_CONF="$WAZUH_DIR/etc/ossec.conf"
 LOG_FILE="/var/log/qfeeds_wazuh.log"
@@ -80,6 +81,17 @@ if [ -f "$WAZUH_CONF" ]; then
     fi
 else
     echo "  ossec.conf not found at $WAZUH_CONF. Skipping."
+fi
+
+# ================================
+# Remove Wazuh Decoders File
+# ================================
+echo "Removing Wazuh decoders..."
+if [ -f "$WAZUH_DECODERS_FILE" ]; then
+    rm -f "$WAZUH_DECODERS_FILE"
+    echo "  Removed $WAZUH_DECODERS_FILE"
+else
+    echo "  Decoders file not found."
 fi
 
 # ================================
