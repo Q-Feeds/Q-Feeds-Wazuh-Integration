@@ -34,9 +34,18 @@ Obtain your API key at [tip.qfeeds.com](https://tip.qfeeds.com/).
 
 ### Step 2: Download the scripts
 
+Using `git`:
+
 ```bash
 git clone https://github.com/Q-Feeds/Q-Feeds-Wazuh-Integration.git /tmp/qfeeds-wazuh
 cd /tmp/qfeeds-wazuh
+```
+
+Or download and extract the archive (no git required):
+
+```bash
+curl -sL https://github.com/Q-Feeds/Q-Feeds-Wazuh-Integration/archive/refs/heads/main.tar.gz | tar xz -C /tmp
+cd /tmp/Q-Feeds-Wazuh-Integration-main
 ```
 
 ### Step 3: Run the installer as root
