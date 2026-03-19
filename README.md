@@ -2,7 +2,7 @@
 
 # 🛡️ Q-Feeds Wazuh Integration
 
-**Threat intelligence for Wazuh SIEM — detect malicious IPs, domains, and phishing URLs in your logs**
+**Threat intelligence for Wazuh SIEM — detect malicious IPs, domains, phishing URLs, and file hashes in your logs**
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Wazuh](https://img.shields.io/badge/Wazuh-4.x+-orange)](https://wazuh.com/)
@@ -16,6 +16,7 @@
 - [Quick Start](#-quick-start)
 - [Overview](#-overview)
 - [How It Works](#-how-it-works)
+- [TAXII 2.1 Integration](#-taxii-21-integration)
 - [Configuring Domain Detection on OPNsense](#-configuring-domain-detection-on-opnsense-unbound)
 - [Installation](#-detailed-installation)
 - [Configuration](#-configuration)
@@ -55,26 +56,36 @@ sudo bash install.sh
 ```
 
 The installer will:
-1. Prompt for your API token, feed selection, and optional settings
-2. Install the updater script, decoders, rules, and cron job
-3. Perform the first full feed download immediately
+1. Ask whether to use **Standard API** or **TAXII 2.1** mode
+2. Prompt for credentials, feed/collection selection, and optional settings
+3. Install the updater script, decoders, rules, and cron job
+4. Perform the first full feed download immediately
 
 ### Step 4: Done
 
-Your Wazuh manager is now monitoring for malicious IPs and domains. The cron job checks for updates every 20 minutes (configurable), and actual API calls only happen when your license allows.
+Your Wazuh manager is now monitoring for threat indicators. The cron job checks for updates every 20 minutes (Standard mode) or daily at a random hour (TAXII mode, staggered to avoid server load spikes); both are configurable.
 
 ---
 
 ## 📖 Overview
 
-Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](https://wazuh.com) to detect and optionally block connections to known malicious IP addresses and domains.
+Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](https://wazuh.com) to detect and optionally block connections to known malicious IP addresses, domains, phishing URLs, and file hashes.
+
+Two integration modes are available:
+
+| Mode | Data Source | IOC Types | Authentication |
+|---|---|---|---|
+| **Standard API** | Q-Feeds REST API (plain text feeds) | IPs, Domains, Phishing URLs | API token |
+| **TAXII 2.1** | Q-Feeds TAXII server (STIX indicators) | IPs, Domains, URLs, MD5/SHA-1/SHA-256 hashes | Username + Password |
 
 - ✅ **Malware IP detection** — alerts when a source or destination IP matches the Q-Feeds malware IP blacklist
 - ✅ **Malware domain detection** — alerts when a domain in DNS, web, or proxy logs matches the Q-Feeds malware domain blacklist
-- ✅ **Phishing URL detection** — alerts when a full URL in proxy or web logs matches the Q-Feeds phishing URL feed (requires license)
+- ✅ **Phishing URL detection** — alerts when a full URL in proxy or web logs matches the Q-Feeds phishing URL feed
+- ✅ **Malicious hash detection** (TAXII mode) — alerts when an MD5, SHA-1, or SHA-256 hash matches the Q-Feeds malicious hash list via Sysmon events
+- ✅ **TAXII 2.1 support** — fetch STIX indicators with threat context (category, MITRE ATT&CK, geo) from Q-Feeds TAXII server
 - ✅ **Active Response** (optional) — automatically blocks matched IPs using the local firewall via Wazuh's `firewall-drop` command
 - ✅ **IPv4 and IPv6 support** for IP feeds
-- ✅ **Custom decoders** — includes Unbound DNS decoder for OPNsense and other Unbound-based resolvers
+- ✅ **Custom decoders** — includes Unbound DNS decoder and Sysmon hash extraction decoders
 - ✅ **Multi-platform domain detection** — dedicated rules for Sysmon (Windows), web/proxy servers, and Unbound DNS
 - ✅ **License-aware scheduling** — only fetches new data when the Q-Feeds API indicates updates are available
 - ✅ **Automatic CDB compilation** — restarts Wazuh only when changes are detected (4.x+ compiles automatically)
@@ -84,7 +95,7 @@ Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](ht
 
 ## 🔧 How It Works
 
-### Architecture
+### Architecture — Standard API Mode
 
 ```
 Q-Feeds API           Wazuh Manager
@@ -95,19 +106,40 @@ Q-Feeds API           Wazuh Manager
                       3. Convert to CDB format
                       4. Write to /var/ossec/etc/lists/
                       5. Restart Wazuh manager (compiles CDB lists automatically on 4.x+)
-                      
-                      Wazuh Rules Engine
-                      ------------------
-                      Log event arrives
-                        -> Decoder extracts srcip / dstip / url
-                        -> Custom rule checks CDB list
-                        -> Match found? Generate alert (level 10)
-                        -> Active Response enabled? Block IP
+```
+
+### Architecture — TAXII 2.1 Mode
+
+```
+Q-Feeds TAXII Server   Wazuh Manager
+--------------------   -------------------------------------------
+                       qfeeds-wazuh-updater.py (cron, daily at 4 AM default)
+  /collections <-----  1. Fetch STIX indicators (paginated, Basic auth)
+                       2. Parse STIX patterns (IPs, domains, URLs, hashes)
+                       3. Optionally filter expired indicators (valid_until)
+                       4. Extract threat context (category, MITRE, geo)
+                       5. Convert to CDB format with context values
+                       6. Write to /var/ossec/etc/lists/
+                       7. Restart Wazuh manager
+```
+
+### Detection Flow
+
+```
+Wazuh Rules Engine
+------------------
+Log event arrives
+  -> Decoder extracts srcip / dstip / url / sha256 / sha1 / md5
+  -> Custom rule checks CDB list
+  -> Match found? Generate alert (level 10)
+  -> Active Response enabled? Block IP
 ```
 
 ### CDB List Format
 
-Wazuh CDB lists use a `key:value` format. This integration stores indicators as keys with empty values:
+Wazuh CDB lists use a `key:value` format.
+
+**Standard mode** stores indicators as keys with empty values. **TAXII mode** includes threat context as the value (e.g. `threat=Trojan;category=BotC&C`).
 
 | Feed Type | CDB Entry Example | Matching |
 |---|---|---|
@@ -116,6 +148,9 @@ Wazuh CDB lists use a `key:value` format. This integration stores indicators as 
 | Malware Domains | `evil-domain.com:` | `match_key` on url field |
 | Phishing URLs | `https://evil.com/login:` | `match_key` on url field |
 | Phishing URLs (no scheme) | `evil.com/login:` | `match_key` on url field |
+| Malicious Hashes (SHA-256) | `a1b2c3...:threat=Trojan` | `match_key` on sha256 field |
+| Malicious Hashes (SHA-1) | `d4e5f6...:` | `match_key` on sha1 field |
+| Malicious Hashes (MD5) | `a1b2c3...:` | `match_key` on md5 field |
 
 IPv4 CIDRs are converted to Wazuh's dot-notation. Only /8, /16, /24, and /32 masks are supported by Wazuh — other CIDR sizes are skipped.
 
@@ -133,11 +168,17 @@ The integration installs these custom rules:
 | 100211 | 10 | DNS query to malware domain (Sysmon) | `win.eventdata.queryName` in Sysmon Event ID 22 |
 | 100212 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC5424) |
 | 100213 | 10 | DNS query to malware domain (Unbound) | `url` decoded from Unbound query logs (RFC3164) |
-| 100220 | 10 | Phishing URL detected in web/proxy logs | `url` in web server or proxy logs (requires license) |
+| 100220 | 10 | Phishing URL detected in web/proxy logs | `url` in web server or proxy logs |
+| 100230 | 10 | SHA-256 hash found in malicious hash list | `sha256` extracted from Sysmon Events 1/6/7 (TAXII mode) |
+| 100231 | 10 | SHA-1 hash found in malicious hash list | `sha1` extracted from Sysmon Events 1/6/7 (TAXII mode) |
+| 100232 | 10 | MD5 hash found in malicious hash list | `md5` extracted from Sysmon Events 1/6/7 (TAXII mode) |
 
 ### Custom Decoders
 
-The integration includes a custom decoder (`/var/ossec/etc/decoders/qfeeds_decoders.xml`) for **Unbound DNS resolver** logs. It extracts the client IP, queried domain, query type, and response code from Unbound query lines. This decoder supports both RFC5424 (raw OPNsense logs) and RFC3164 (syslog-forwarded) formats.
+The integration includes custom decoders (`/var/ossec/etc/decoders/qfeeds_decoders.xml`):
+
+- **Unbound DNS resolver** — extracts the client IP, queried domain, query type, and response code from Unbound query lines. Supports both RFC5424 (raw OPNsense logs) and RFC3164 (syslog-forwarded) formats.
+- **Sysmon hash extraction** (TAXII mode) — extracts individual MD5, SHA-1, and SHA-256 values from the combined Sysmon `Hashes` field (format: `SHA1=xxx,MD5=yyy,SHA256=zzz`) so they can be matched against CDB lists.
 
 ### Log Sources That Trigger Detection
 
@@ -167,6 +208,68 @@ The integration includes a custom decoder (`/var/ossec/etc/decoders/qfeeds_decod
 | Reverse proxy / WAF | Any | 100220 | Logs upstream requests with full URLs |
 
 > **Note:** HTTPS traffic through a proxy is typically logged as a `CONNECT` to the domain only (the path is encrypted). Full URL matching for HTTPS phishing URLs requires SSL inspection / TLS interception on the proxy.
+
+---
+
+## 🔗 TAXII 2.1 Integration
+
+The TAXII mode connects directly to the Q-Feeds TAXII server to fetch STIX 2.1 indicators. This provides richer threat context and supports additional IOC types like file hashes.
+
+### When to Use TAXII Mode
+
+- You need **file hash detection** (MD5, SHA-1, SHA-256) via Sysmon
+- You want **threat context** (category, MITRE ATT&CK, geo) stored with indicators for manual lookup or future enrichment
+- Your organization uses **STIX/TAXII** as a standard exchange format
+- You have a **TAXII subscription** with Q-Feeds
+
+### TAXII Prerequisites
+
+- Active TAXII subscription with Q-Feeds
+- TAXII username and password (separate from the REST API token)
+- Network access to `taxii.qfeeds.com` (port 443)
+
+### How TAXII Mode Works
+
+1. The updater connects to the Q-Feeds TAXII server using Basic authentication
+2. For each configured collection, it fetches all STIX indicator objects (paginated)
+3. STIX patterns are parsed to extract IOCs:
+   - `[ipv4-addr:value = '1.2.3.4']` → IP address
+   - `[domain-name:value = 'evil.com']` → Domain
+   - `[url:value = 'evil.com/path']` → URL
+   - `[file:hashes.'SHA-256' = 'abc...']` → Hash
+4. Expired indicators (`valid_until` in the past) are automatically skipped
+5. Threat context from the STIX `description` field is stored as CDB values
+6. IOCs are grouped by type and written to separate CDB lists
+
+### TAXII Collections
+
+The installer auto-discovers available collections from the TAXII server. You can select specific collections or all of them. Each collection maps to IOC types:
+
+| Collection | IOC Types | CDB Lists Created |
+|---|---|---|
+| IP Reputation | IPv4, IPv6 | `qfeeds-malware-ip` |
+| Malicious Domains | Domains | `qfeeds-malware-domains` |
+| Phishing URLs | URLs | `qfeeds-phishing-urls` |
+| Malicious Hashes | MD5, SHA-1, SHA-256 | `qfeeds-malicious-hashes-md5`, `-sha1`, `-sha256` |
+
+### Threat Context in Alerts
+
+In TAXII mode, CDB entries include threat context extracted from STIX descriptions. When a rule matches, this context is available in the alert:
+
+```
+CDB entry:     evil.com:threat=Trojan-Spy;category=Bot C&C;mitre=T1071
+Alert data:    threat=Trojan-Spy;category=Bot C&C;mitre=T1071
+```
+
+### Hash Detection via Sysmon
+
+Hash matching requires **Sysmon** deployed on Windows endpoints with the Wazuh agent. The integration includes custom decoders that extract individual hash values from Sysmon events:
+
+- **Event ID 1** — Process Create (new process started)
+- **Event ID 6** — Driver Loaded
+- **Event ID 7** — Image Loaded (DLL loaded)
+
+Ensure Sysmon is configured to log hashes (default configuration includes SHA-256 and MD5). The Sysmon `Hashes` field format (`SHA1=xxx,MD5=yyy,SHA256=zzz`) is parsed by the custom decoders.
 
 ---
 
@@ -237,12 +340,17 @@ sudo bash install.sh
 
 The installer will prompt for:
 
-1. **API Token** — your Q-Feeds API token
-2. **Feed types** — enable/disable Malware IPs, Malware Domains, and Phishing URLs
-3. **IPv6** — include IPv6 addresses in the IP feed
-4. **Active Response** — auto-block matched IPs with a configurable timeout
-5. **IP Whitelist** — IPs that should never trigger alerts
-6. **Cron schedule** — how often to check for updates (default: every 20 minutes)
+1. **Integration mode** — Standard API or TAXII 2.1
+2. **Credentials** — API token (Standard) or TAXII username/password (TAXII)
+3. **Feed / Collection selection** — which feeds or TAXII collections to enable
+4. **Skip expired indicators** (TAXII only) — whether to ignore indicators whose `valid_until` date has passed
+5. **IPv6** — include IPv6 addresses in the IP feed (Standard mode)
+6. **Active Response** — auto-block matched IPs with a configurable timeout
+7. **IP Whitelist** — IPs that should never trigger alerts
+8. **Cron schedule** — how often to check for updates (default: every 20 min for Standard, daily at 4 AM for TAXII)
+9. **Run initial feed download** (TAXII only) — TAXII collections can contain millions of objects; you can skip to let the cron job run the first download in the background
+
+In TAXII mode, the installer auto-discovers the API root and lists available collections for selection.
 
 ### What Gets Installed
 
@@ -255,6 +363,9 @@ The installer will prompt for:
 | CDB list (IPs) | `/var/ossec/etc/lists/qfeeds-malware-ip` |
 | CDB list (domains) | `/var/ossec/etc/lists/qfeeds-malware-domains` |
 | CDB list (phishing URLs) | `/var/ossec/etc/lists/qfeeds-phishing-urls` |
+| CDB list (MD5 hashes) | `/var/ossec/etc/lists/qfeeds-malicious-hashes-md5` (TAXII mode) |
+| CDB list (SHA-1 hashes) | `/var/ossec/etc/lists/qfeeds-malicious-hashes-sha1` (TAXII mode) |
+| CDB list (SHA-256 hashes) | `/var/ossec/etc/lists/qfeeds-malicious-hashes-sha256` (TAXII mode) |
 | Log file | `/var/log/qfeeds_wazuh.log` |
 | Cron job | User crontab for root |
 
@@ -268,7 +379,10 @@ The installer also modifies `/var/ossec/etc/ossec.conf` to add CDB list referenc
 
 Located at `/etc/qfeeds/qfeeds_wazuh.conf`:
 
+**Standard mode example:**
+
 ```bash
+INTEGRATION_MODE="standard"
 API_TOKEN="your-api-token-here"
 
 FEED_MALWARE_IP="yes"
@@ -286,20 +400,48 @@ WHITELIST_V6=""
 LOG_FILE="/var/log/qfeeds_wazuh.log"
 ```
 
+**TAXII mode example:**
+
+```bash
+INTEGRATION_MODE="taxii"
+
+TAXII_URL="https://taxii.qfeeds.com"
+TAXII_API_ROOT="taxii2/feeds_database"
+TAXII_USERNAME="your-taxii-username"
+TAXII_PASSWORD="your-taxii-password"
+TAXII_COLLECTIONS="taxii-ip-reputation-data-feed,taxii-phishing-url-data-feed,malicious-hash-data-feed"
+TAXII_SKIP_EXPIRED="yes"
+
+ACTIVE_RESPONSE="no"
+ACTIVE_RESPONSE_TIMEOUT="60"
+
+WHITELIST_V4=""
+WHITELIST_V6=""
+
+LOG_FILE="/var/log/qfeeds_wazuh.log"
+```
+
 ### Configuration Reference
 
-| Variable | Description | Default |
-|---|---|---|
-| `API_TOKEN` | Q-Feeds API token (required) | — |
-| `FEED_MALWARE_IP` | Enable malware IP feed | `yes` |
-| `FEED_MALWARE_DOMAINS` | Enable malware domains feed | `yes` |
-| `FEED_PHISHING_URLS` | Enable phishing URLs feed (requires license) | `no` |
-| `IPV6` | Include IPv6 in IP feed | `yes` |
-| `ACTIVE_RESPONSE` | Enable Active Response (set during install) | `no` |
-| `ACTIVE_RESPONSE_TIMEOUT` | Block duration in seconds | `60` |
-| `WHITELIST_V4` | Comma-separated IPv4 addresses to never alert on | *(empty)* |
-| `WHITELIST_V6` | Comma-separated IPv6 addresses to never alert on | *(empty)* |
-| `LOG_FILE` | Path to the updater log file | `/var/log/qfeeds_wazuh.log` |
+| Variable | Description | Mode | Default |
+|---|---|---|---|
+| `INTEGRATION_MODE` | `standard` or `taxii` | Both | `standard` |
+| `API_TOKEN` | Q-Feeds API token | Standard | — |
+| `FEED_MALWARE_IP` | Enable malware IP feed | Standard | `yes` |
+| `FEED_MALWARE_DOMAINS` | Enable malware domains feed | Standard | `yes` |
+| `FEED_PHISHING_URLS` | Enable phishing URLs feed | Standard | `no` |
+| `IPV6` | Include IPv6 in IP feed | Standard | `yes` |
+| `TAXII_URL` | TAXII server URL | TAXII | `https://taxii.qfeeds.com` |
+| `TAXII_API_ROOT` | TAXII API root path | TAXII | — |
+| `TAXII_USERNAME` | TAXII Basic auth username | TAXII | — |
+| `TAXII_PASSWORD` | TAXII Basic auth password | TAXII | — |
+| `TAXII_COLLECTIONS` | Comma-separated collection IDs | TAXII | — |
+| `TAXII_SKIP_EXPIRED` | Skip indicators with `valid_until` in the past | TAXII | `yes` |
+| `ACTIVE_RESPONSE` | Enable Active Response | Both | `no` |
+| `ACTIVE_RESPONSE_TIMEOUT` | Block duration in seconds | Both | `60` |
+| `WHITELIST_V4` | Comma-separated IPv4 whitelist | Both | *(empty)* |
+| `WHITELIST_V6` | Comma-separated IPv6 whitelist | Both | *(empty)* |
+| `LOG_FILE` | Path to the updater log file | Both | `/var/log/qfeeds_wazuh.log` |
 
 ### Changing Configuration After Install
 
@@ -314,8 +456,8 @@ To enable/disable feeds or Active Response after installation, you will also nee
 - [x] **Wazuh manager** 4.x or later (installed at `/var/ossec`)
 - [x] **Root access** on the Wazuh manager server
 - [x] **curl** installed on the system
-- [x] **Q-Feeds API token** with an active license
-- [x] Internet access to `api.qfeeds.com`
+- [x] **Q-Feeds API token** (Standard mode) or **TAXII credentials** (TAXII mode)
+- [x] Internet access to `api.qfeeds.com` (Standard) or `taxii.qfeeds.com` (TAXII)
 
 No additional Python installation is needed — the integration uses the Python bundled with Wazuh (`/var/ossec/framework/python/bin/python3`).
 
@@ -338,17 +480,17 @@ tail -f /var/log/qfeeds_wazuh.log
 ### Verify CDB Lists
 
 ```bash
-# Check the IP list
-wc -l /var/ossec/etc/lists/qfeeds-malware-ip
-head -20 /var/ossec/etc/lists/qfeeds-malware-ip
+# Check all Q-Feeds CDB lists
+for f in /var/ossec/etc/lists/qfeeds-*; do
+  [ -f "$f" ] && echo "$(wc -l < "$f") entries  $f"
+done
 
-# Check the domains list
-wc -l /var/ossec/etc/lists/qfeeds-malware-domains
-head -20 /var/ossec/etc/lists/qfeeds-malware-domains
+# View sample entries
+head -5 /var/ossec/etc/lists/qfeeds-malware-ip
+head -5 /var/ossec/etc/lists/qfeeds-malware-domains
 
-# Check the phishing URLs list (if enabled)
-wc -l /var/ossec/etc/lists/qfeeds-phishing-urls
-head -20 /var/ossec/etc/lists/qfeeds-phishing-urls
+# TAXII mode: verify hash lists have context
+head -5 /var/ossec/etc/lists/qfeeds-malicious-hashes-sha256
 ```
 
 ### Verify Rules Are Loaded
@@ -374,6 +516,9 @@ Navigate to **Threat Hunting** and filter by:
 - `rule.id: 100211` (domain match — Sysmon DNS)
 - `rule.id: 100212` or `rule.id: 100213` (domain match — Unbound DNS)
 - `rule.id: 100220` (phishing URL match)
+- `rule.id: 100230` (SHA-256 hash match — TAXII mode)
+- `rule.id: 100231` (SHA-1 hash match — TAXII mode)
+- `rule.id: 100232` (MD5 hash match — TAXII mode)
 - `rule.groups: qfeeds` (all Q-Feeds alerts)
 
 ---
@@ -470,11 +615,11 @@ sudo bash uninstall.sh
 
 This removes all Q-Feeds components:
 - Cron job
-- CDB lists and compiled `.cdb` files (IPs, domains, and phishing URLs)
-- Wazuh decoders file
+- CDB lists and compiled `.cdb` files (IPs, domains, phishing URLs, and hash lists)
+- Wazuh decoders file (including Sysmon hash extraction decoders)
 - Wazuh rules file
 - ossec.conf modifications (CDB list references and Active Response)
-- Configuration file
+- Configuration file (including TAXII credentials)
 - Updater script
 - Log and lock files
 
