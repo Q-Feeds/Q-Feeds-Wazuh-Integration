@@ -543,7 +543,7 @@ setup_cron() {
     CRON_SCHEDULE=${CRON_SCHEDULE:-"*/20 * * * *"}
 
     # Remove any existing Q-Feeds Wazuh cron entries, then add new one
-    (crontab -l 2>/dev/null | grep -v "$UPDATER_DEST"; echo "$CRON_SCHEDULE $CRON_CMD") | crontab -
+    (crontab -l 2>/dev/null | grep -v "$UPDATER_DEST" || true; echo "$CRON_SCHEDULE $CRON_CMD") | crontab -
     echo "Cron job added: $CRON_SCHEDULE $CRON_CMD"
 }
 
