@@ -75,12 +75,12 @@ Two integration modes are available:
 
 | Mode | Data Source | IOC Types | Authentication |
 |---|---|---|---|
-| **Standard API** | Q-Feeds REST API (plain text feeds) | IPs, Domains, Phishing URLs | API token |
+| **Standard API** | Q-Feeds REST API (plain text feeds) | IPs, Domains, Malicious URLs | API token |
 | **TAXII 2.1** | Q-Feeds TAXII server (STIX indicators) | IPs, Domains, URLs, MD5/SHA-1/SHA-256 hashes | Username + Password |
 
 - ✅ **Malware IP detection** — alerts when a source or destination IP matches the Q-Feeds malware IP blacklist
 - ✅ **Malware domain detection** — alerts when a domain in DNS, web, or proxy logs matches the Q-Feeds malware domain blacklist
-- ✅ **Phishing URL detection** — alerts when a full URL in proxy or web logs matches the Q-Feeds phishing URL feed
+- ✅ **Malicious URL detection** — alerts when a full URL in proxy or web logs matches the Q-Feeds malicious URL feed
 - ✅ **Malicious hash detection** (TAXII mode) — alerts when an MD5, SHA-1, or SHA-256 hash matches the Q-Feeds malicious hash list via Sysmon events
 - ✅ **TAXII 2.1 support** — fetch STIX indicators with threat context (category, MITRE ATT&CK, geo) from Q-Feeds TAXII server
 - ✅ **Active Response** (optional) — automatically blocks matched IPs using the local firewall via Wazuh's `firewall-drop` command
@@ -387,7 +387,7 @@ API_TOKEN="your-api-token-here"
 
 FEED_MALWARE_IP="yes"
 FEED_MALWARE_DOMAINS="yes"
-FEED_PHISHING_URLS="no"
+FEED_MALICIOUS_URLS="no"
 
 IPV6="yes"
 
@@ -429,7 +429,7 @@ LOG_FILE="/var/log/qfeeds_wazuh.log"
 | `API_TOKEN` | Q-Feeds API token | Standard | — |
 | `FEED_MALWARE_IP` | Enable malware IP feed | Standard | `yes` |
 | `FEED_MALWARE_DOMAINS` | Enable malware domains feed | Standard | `yes` |
-| `FEED_PHISHING_URLS` | Enable phishing URLs feed | Standard | `no` |
+| `FEED_MALICIOUS_URLS` | Enable malicious URLs feed | Standard | `no` |
 | `IPV6` | Include IPv6 in IP feed | Standard | `yes` |
 | `TAXII_URL` | TAXII server URL | TAXII | `https://taxii.qfeeds.com` |
 | `TAXII_API_ROOT` | TAXII API root path | TAXII | — |
@@ -446,6 +446,8 @@ LOG_FILE="/var/log/qfeeds_wazuh.log"
 ### Changing Configuration After Install
 
 You can edit `/etc/qfeeds/qfeeds_wazuh.conf` directly for options like API token, IPv6, and whitelists. These take effect on the next updater run.
+
+`FEED_MALICIOUS_URLS=yes` enables the `malicious_urls` REST feed. On an existing install, `FEED_PHISHING_URLS=yes` still enables the same feed; new installs write only `FEED_MALICIOUS_URLS`.
 
 To enable/disable feeds or Active Response after installation, you will also need to update the Wazuh rules file and ossec.conf. It is easier to re-run the installer.
 
@@ -565,6 +567,12 @@ Navigate to **Threat Hunting** and filter by:
    ```bash
    grep API_TOKEN /etc/qfeeds/qfeeds_wazuh.conf
    ```
+
+4. If the log contains `Feed 'phishing_urls' not found in license data`, the updater is from before the `malicious_urls` rename. Replace `/usr/local/bin/qfeeds-wazuh-updater.py` with the current script and run a forced update:
+   ```bash
+   sudo QFEEDS_FORCE_UPDATE=1 /var/ossec/framework/python/bin/python3 /usr/local/bin/qfeeds-wazuh-updater.py
+   ```
+   Existing configs with `FEED_PHISHING_URLS=yes` do not need to be renamed.
 
 ### CDB list not compiling
 

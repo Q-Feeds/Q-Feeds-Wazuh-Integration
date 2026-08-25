@@ -35,7 +35,7 @@ API_BASE = "https://api.qfeeds.com"
 
 FEED_TYPE_IP = "malware_ip"
 FEED_TYPE_DOMAINS = "malware_domains"
-FEED_TYPE_PHISHING_URLS = "phishing_urls"
+FEED_TYPE_URLS = "malicious_urls"
 
 CDB_FILE_IP = os.path.join(WAZUH_LISTS_DIR, "qfeeds-malware-ip")
 CDB_FILE_DOMAINS = os.path.join(WAZUH_LISTS_DIR, "qfeeds-malware-domains")
@@ -806,7 +806,7 @@ def convert_domain_feed_to_cdb(feed_text):
 
 def url_to_cdb_keys(line):
     """
-    Convert a phishing URL line to one or more Wazuh CDB keys.
+    Convert a malicious URL line to one or more Wazuh CDB keys.
 
     Stores two variants for maximum matching coverage:
       1. The URL as-is (with protocol) — matches proxy logs that log full URLs
@@ -834,7 +834,7 @@ def url_to_cdb_keys(line):
 
 def convert_url_feed_to_cdb(feed_text):
     """
-    Convert plain-text phishing URL feed to CDB list content.
+    Convert plain-text malicious URL feed to CDB list content.
     Returns a sorted, deduplicated string of CDB entries.
     """
     entries = set()
@@ -844,7 +844,7 @@ def convert_url_feed_to_cdb(feed_text):
             entries.add(key)
 
     unique_urls = sum(1 for line in feed_text.splitlines() if line.strip() and not line.strip().startswith("#"))
-    log(f"Phishing URL feed: {unique_urls} URLs -> {len(entries)} CDB entries generated.")
+    log(f"Malicious URL feed: {unique_urls} URLs -> {len(entries)} CDB entries generated.")
     return "\n".join(sorted(entries))
 
 
@@ -1021,7 +1021,10 @@ def main_standard(config):
     api_token = config["API_TOKEN"]
     feed_ip_enabled = config.get("FEED_MALWARE_IP", "yes").lower() == "yes"
     feed_domains_enabled = config.get("FEED_MALWARE_DOMAINS", "yes").lower() == "yes"
-    feed_phishing_urls_enabled = config.get("FEED_PHISHING_URLS", "no").lower() == "yes"
+    feed_urls_enabled = (
+        config.get("FEED_MALICIOUS_URLS", "no").lower() == "yes"
+        or config.get("FEED_PHISHING_URLS", "no").lower() == "yes"
+    )
     ipv6_enabled = config.get("IPV6", "yes").lower() == "yes"
 
     whitelist_v4 = parse_whitelist(config.get("WHITELIST_V4", ""))
@@ -1029,7 +1032,7 @@ def main_standard(config):
 
     force_update = os.environ.get("QFEEDS_FORCE_UPDATE") == "1"
 
-    if not feed_ip_enabled and not feed_domains_enabled and not feed_phishing_urls_enabled:
+    if not feed_ip_enabled and not feed_domains_enabled and not feed_urls_enabled:
         log("No feeds enabled. Nothing to do.")
         return
 
@@ -1073,16 +1076,16 @@ def main_standard(config):
             else:
                 log("Warning: No domain feed data received. Keeping existing CDB list.")
 
-    # --- Phishing URLs Feed ---
-    if feed_phishing_urls_enabled:
-        if force_update or should_update_feed(license_data, FEED_TYPE_PHISHING_URLS):
-            url_text = download_feed(api_token, FEED_TYPE_PHISHING_URLS)
+    # --- Malicious URLs Feed ---
+    if feed_urls_enabled:
+        if force_update or should_update_feed(license_data, FEED_TYPE_URLS):
+            url_text = download_feed(api_token, FEED_TYPE_URLS)
             if url_text:
                 cdb_content = convert_url_feed_to_cdb(url_text)
                 if write_cdb_list(CDB_FILE_PHISHING_URLS, cdb_content):
                     any_changed = True
             else:
-                log("Warning: No phishing URL feed data received. Keeping existing CDB list.")
+                log("Warning: No malicious URL feed data received. Keeping existing CDB list.")
 
     # --- Compile and Restart ---
     if any_changed:

@@ -111,7 +111,7 @@ check_feed_licenses() {
 
     LICENSE_MALWARE_IP="unknown"
     LICENSE_MALWARE_DOMAINS="unknown"
-    LICENSE_PHISHING_URLS="unknown"
+    LICENSE_MALICIOUS_URLS="unknown"
     LICENSE_INFO=""
 
     local response http_status body
@@ -143,7 +143,7 @@ try:
     elif ln:
         print("LICENSE_INFO=" + ln)
     feeds = {f["feed_type"]: f.get("licensed", False) for f in data.get("feeds", [])}
-    for ft in ["malware_ip", "malware_domains", "phishing_urls"]:
+    for ft in ["malware_ip", "malware_domains", "malicious_urls"]:
         val = "yes" if feeds.get(ft, False) else "no"
         print(ft + "=" + val)
 except Exception:
@@ -163,8 +163,8 @@ except Exception:
     echo "$license_output" | grep -q "^malware_ip=no" && LICENSE_MALWARE_IP="no"
     echo "$license_output" | grep -q "^malware_domains=yes" && LICENSE_MALWARE_DOMAINS="yes"
     echo "$license_output" | grep -q "^malware_domains=no" && LICENSE_MALWARE_DOMAINS="no"
-    echo "$license_output" | grep -q "^phishing_urls=yes" && LICENSE_PHISHING_URLS="yes"
-    echo "$license_output" | grep -q "^phishing_urls=no" && LICENSE_PHISHING_URLS="no"
+    echo "$license_output" | grep -q "^malicious_urls=yes" && LICENSE_MALICIOUS_URLS="yes"
+    echo "$license_output" | grep -q "^malicious_urls=no" && LICENSE_MALICIOUS_URLS="no"
 
     if [ -n "$LICENSE_INFO" ]; then
         echo "  License: $LICENSE_INFO"
@@ -172,7 +172,7 @@ except Exception:
     echo
 
     local status
-    for feed_label in "Malware IPs:LICENSE_MALWARE_IP" "Malware Domains:LICENSE_MALWARE_DOMAINS" "Phishing URLs:LICENSE_PHISHING_URLS"; do
+    for feed_label in "Malware IPs:LICENSE_MALWARE_IP" "Malware Domains:LICENSE_MALWARE_DOMAINS" "Malicious URLs:LICENSE_MALICIOUS_URLS"; do
         local label="${feed_label%%:*}"
         local var="${feed_label##*:}"
         local val="${!var}"
@@ -350,7 +350,7 @@ except Exception as e:
     API_TOKEN=""
     FEED_MALWARE_IP="no"
     FEED_MALWARE_DOMAINS="no"
-    FEED_PHISHING_URLS="no"
+    FEED_MALICIOUS_URLS="no"
     IPV6="no"
 }
 
@@ -406,24 +406,24 @@ configure_script() {
             esac
         fi
 
-        if [ "$LICENSE_PHISHING_URLS" = "no" ]; then
-            echo "  Phishing URLs feed: not licensed — skipping"
-            FEED_PHISHING_URLS="no"
-        elif [ "$LICENSE_PHISHING_URLS" = "yes" ]; then
-            read -rp "Enable Phishing URLs feed? [Y/n]: " FEED_PHISHING_CHOICE
-            case "$FEED_PHISHING_CHOICE" in
-                [nN][oO]|[nN]) FEED_PHISHING_URLS="no" ;;
-                *) FEED_PHISHING_URLS="yes" ;;
+        if [ "$LICENSE_MALICIOUS_URLS" = "no" ]; then
+            echo "  Malicious URLs feed: not licensed — skipping"
+            FEED_MALICIOUS_URLS="no"
+        elif [ "$LICENSE_MALICIOUS_URLS" = "yes" ]; then
+            read -rp "Enable Malicious URLs feed? [Y/n]: " FEED_URLS_CHOICE
+            case "$FEED_URLS_CHOICE" in
+                [nN][oO]|[nN]) FEED_MALICIOUS_URLS="no" ;;
+                *) FEED_MALICIOUS_URLS="yes" ;;
             esac
         else
-            read -rp "Enable Phishing URLs feed? (license status unknown) [y/N]: " FEED_PHISHING_CHOICE
-            case "$FEED_PHISHING_CHOICE" in
-                [yY][eE][sS]|[yY]) FEED_PHISHING_URLS="yes" ;;
-                *) FEED_PHISHING_URLS="no" ;;
+            read -rp "Enable Malicious URLs feed? (license status unknown) [y/N]: " FEED_URLS_CHOICE
+            case "$FEED_URLS_CHOICE" in
+                [yY][eE][sS]|[yY]) FEED_MALICIOUS_URLS="yes" ;;
+                *) FEED_MALICIOUS_URLS="no" ;;
             esac
         fi
 
-        if [ "$FEED_MALWARE_IP" = "no" ] && [ "$FEED_MALWARE_DOMAINS" = "no" ] && [ "$FEED_PHISHING_URLS" = "no" ]; then
+        if [ "$FEED_MALWARE_IP" = "no" ] && [ "$FEED_MALWARE_DOMAINS" = "no" ] && [ "$FEED_MALICIOUS_URLS" = "no" ]; then
             echo "Error: At least one feed type must be enabled."
             exit 1
         fi
@@ -491,7 +491,7 @@ API_TOKEN="$API_TOKEN"
 
 FEED_MALWARE_IP="$FEED_MALWARE_IP"
 FEED_MALWARE_DOMAINS="$FEED_MALWARE_DOMAINS"
-FEED_PHISHING_URLS="$FEED_PHISHING_URLS"
+FEED_MALICIOUS_URLS="$FEED_MALICIOUS_URLS"
 
 IPV6="$IPV6"
 
@@ -641,7 +641,7 @@ RULES_HEADER
     else
         [ "$FEED_MALWARE_IP" = "yes" ] && install_ip_rules="yes"
         [ "$FEED_MALWARE_DOMAINS" = "yes" ] && install_domain_rules="yes"
-        [ "$FEED_PHISHING_URLS" = "yes" ] && install_url_rules="yes"
+        [ "$FEED_MALICIOUS_URLS" = "yes" ] && install_url_rules="yes"
     fi
 
     {
@@ -794,7 +794,7 @@ configure_ossec() {
         if [ "$FEED_MALWARE_DOMAINS" = "yes" ]; then
             list_block="$list_block\n    <list>etc/lists/qfeeds-malware-domains</list>"
         fi
-        if [ "$FEED_PHISHING_URLS" = "yes" ]; then
+        if [ "$FEED_MALICIOUS_URLS" = "yes" ]; then
             list_block="$list_block\n    <list>etc/lists/qfeeds-phishing-urls</list>"
         fi
     fi
