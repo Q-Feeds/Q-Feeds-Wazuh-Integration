@@ -69,7 +69,7 @@ Your Wazuh manager is now monitoring for threat indicators. The cron job checks 
 
 ## 📖 Overview
 
-Integrate [Q-Feeds](https://qfeeds.com) Threat Intelligence with [Wazuh SIEM](https://wazuh.com) to detect and optionally block connections to known malicious IP addresses, domains, phishing URLs, and file hashes.
+Integrate [Q-Feeds](https://qfeeds.com/wazuh-integration/) Threat Intelligence with [Wazuh SIEM](https://wazuh.com) to detect and optionally block connections to known malicious IP addresses, domains, phishing URLs, and file hashes. The [Wazuh setup guide](https://qfeeds.com/knowledge-base/wazuh-setup/) in the Q-Feeds knowledge base walks through the same steps.
 
 Two integration modes are available:
 
